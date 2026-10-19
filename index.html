@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>FSC Quản lý</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231e3a8a'/%3E%3Ctext x='32' y='42' font-size='26' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'%3EFSC%3C/text%3E%3C/svg%3E">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>body{font-family:'Inter',sans-serif;margin:0}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}</style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased">
+  <div id="root"></div>
+  <script>
+    // URL Ứng dụng web Apps Script (Triển khai → Ứng dụng web → URL kết thúc bằng /exec) của Sheet FSC_WMS_Data.
+    window.FSC_API_URL = '__API_URL__';
+  </script>
+  <script>
+    // Mục KPI FSC: dùng lại nguyên module của Dashboard FSC (chỉ đọc, dữ liệu từ máy chủ).
+    window.__fscShared = window.__fscShared || {};
+  </script>
+  <script>
+    // ================================================================
+    // KPI FSC: KPI kho lạnh theo 3 dịch vụ (Pick hàng, Chia hàng, Kiểm soát tồn kho).
+    // Lệch hàng đọc trực tiếp Google Sheet "SCF - FSC: LỆCH HÀNG HÓA TẠI ST" (tab "Tháng MM.YYYY")
+    // qua kết nối Google Sheets của chủ trang / người toàn quyền. Mỗi lần đọc được, trang lưu bản dữ liệu vào
+    // bộ nhớ chung (store/kpisnap_<yyyy-mm>); khi chủ trang hoặc Nhóm 3 mở Dashboard, trang tự đọc lại tháng này
+    // và tháng trước mỗi 15 phút. Nhóm 2 (quản lý kho) KHÔNG cần kết nối Google Sheets: xem từ bản lưu chung.
+    // Không bao giờ ghi vào Google Sheet.
+    // Bộ KPI theo tài liệu "Đầu mục công việc & KPI kho lạnh FSC" (14/10/2026).
+    // ================================================================
+    (function () {
+      var h = React.createElement;
+      var useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo;
+      var SHEET_ID = '1ZWvwGuqqoS4PowX_x8Aipmi54MWwD2cxZHoervdjfOM';
+      var SHEET_URL = 'https://docs.google.com/spreadsheets/d/' + SHEET_ID + '/edit';
+      var NAMES = ['Ngày', 'Chi nhánh nhận', 'Mã hàng', 'Tên SP', 'ĐVT', 'Số lượng chuyển', 'Số lượng nhận', 'Chênh lệch', 'PT chuyển hàng', 'Lỗi', 'Tổng GT', 'User', 'Ca/ Giờ Chia'];
+      var NUMS = { 'Số lượng chuyển': 1, 'Số lượng nhận': 1, 'Chênh lệch': 1, 'Tổng GT': 1 };
+      var GROUPS = ['Pick hàng', 'Chia hàng', 'Kiểm soát tồn kho'];
+      var groupOf = function (loi) { return loi === 'DC pick sai' ? 'Pick hàng' : loi === 'DC giao thiếu' ? 'Chia hàng' : loi ? 'Kiểm soát tồn kho' : 'Chưa phân loại'; };
+      var COLOR = { 'Chia hàng': 'bg-blue-600', 'Pick hàng': 'bg-orange-500', 'Kiểm soát tồn kho': 'bg-teal-500' };
+
+      // Truy thu thất thoát kho Đông - Lưu kho, FSC, ngày 28/09/2026 (ảnh "Chi tiết truy thu").
+      var TRUY_THU_T09 = [
+        ['8936187610423', 'CẦN GIỜ - CÁ DỨA MỘT NẮNG GÓI 600G', 1, 'GÓI', 315000],
+        ['8935319710130', 'CP - GÀ CHIÊN POPCORN 300G', 1, 'GÓI', 57000],
+        ['8936077113256', 'KINGxBON - PIZZA TÔM MAYONNAISE 200G', 2, 'CÁI', 69500],
+        ['8936190861010', 'FRESHFOCO - BA CHỈ HEO TÚI ZIP 300G ĐÔNG LẠNH', 2, 'GÓI', 69000],
+        ['8934673600699', 'VINAMILK - KEM GELATO DỪA 90ML', 12, 'HỘP', 43900],
+        ['8888003652400', 'SPRING HOME - BÁNH PARATHA VỊ TRUYỀN THỐNG 325G (5x65G)', 12, 'GÓI', 54000],
+        ['8936187610461', 'CẦN GIỜ - CÁ ĐỒNG MỘT NẮNG 500G', 12, 'GÓI', 109000],
+        ['8938555386725', 'OPLANT - BÁNH MÌ GẠO NGUYÊN CÁM ĐL (10x30G)', 16, 'GÓI', 45000],
+        ['8934717264474', 'CJ CẦU TRE - CHẢ GIÒ DA XỐP NHÂN TÔM & THỊT 400G', 18, 'GÓI', 79500],
+        ['8936220300229', 'JIN YANG - TÔM TẨM BỘT TEMPURA 180G', 20, 'GÓI', 79000],
+        ['8936144012956', 'TVP - BÁNH MÌ QUE XÚC XÍCH PHÔ MAI 210G', 22, 'GÓI', 49000],
+        ['8936013238333', 'SG FOOD - CƠM CHIÊN HẢI SẢN NGŨ SẮC 200G', 40, 'GÓI', 30500],
+        ['8934717401343', 'BIBIGO - BÁNH XẾP MANDU NHÂN HẢI SẢN 175G', 53, 'GÓI', 37000],
+        ['8934673600644', 'VINAMILK - KEM GELATO MATCHA 90ML', 100, 'HỘP', 43900]
+      ];
+
+      var KPI = {
+        'Pick hàng': { note: 'Lỗi tháng: DC pick sai (lấy sai mã, sai số lượng).', rows: [
+          ['Pick đủ hàng', '≥ 99,5%', '30%', 'File SCF Frozen (Booking, Confirm pick)', 'need'],
+          ['Pick đúng hàng', '≥ 99,8%', '25%', 'Số dòng sai có ở đây; cần tổng dòng pick', 'part'],
+          ['Đúng FEFO', '100%', '15%', 'Kiểm tra ngẫu nhiên của nhóm Tồn kho', 'need'],
+          ['Năng suất', 'Theo định mức', '15%', 'Sản lượng ngày ÷ giờ quét mã', 'need'],
+          ['5S khu pick', '≥ 85 điểm', '15%', 'Phiếu chấm 5S trưởng ca', 'need']] },
+        'Chia hàng': { note: 'Lỗi tháng: DC giao thiếu (thiếu item trong kiện khi siêu thị nhận).', rows: [
+          ['Chia đủ hàng', '≥ 99,5%', '30%', 'Số dòng thiếu có ở đây; cần tổng thùng chia (Split)', 'part'],
+          ['Chia đúng cửa hàng', '≥ 99,8%', '25%', 'Phản hồi cửa hàng, kiểm tra chéo', 'need'],
+          ['Xong trước giờ xe', '≥ 98%', '15%', 'Split time so giờ xe', 'need'],
+          ['Đếm Tote, seal, nhãn', '≥ 99,5%', '15%', 'Biên bản bàn giao xe', 'need'],
+          ['5S khu chia', '≥ 85 điểm', '15%', 'Phiếu chấm 5S trưởng ca', 'need']] },
+        'Kiểm soát tồn kho': { note: 'Lỗi tháng: DC pick dư, chênh lệch chưa xác định. Truy thu thất thoát T09 ở ô phía trên.', rows: [
+          ['Độ chính xác tồn kho', '≥ 99,5%', '30%', 'Phiếu kiểm kê WMS; truy thu T09 là chênh lệch đã chốt', 'part'],
+          ['Nhập kho đúng và kịp', '≥ 99%', '20%', 'WMS Inbound (Confirmed)', 'need'],
+          ['Hàng cận date, quá hạn', '0 mã', '20%', 'WMS Inventory, cảnh báo ≤ 30 ngày', 'need'],
+          ['Nhiệt độ kho', '100% (≤ -18 °C)', '15%', 'Sổ nhiệt độ theo ca', 'need'],
+          ['5S kho và vị trí', '≥ 85 điểm', '15%', 'Phiếu chấm 5S quản lý kho', 'need']] }
+      };
+
+      var ERR = {
+        server_not_connected: 'Chưa kết nối Google Sheets. Thêm Google Sheets trong claude.ai (Cài đặt → Connectors) rồi bấm Tải lại.',
+        needs_reauth: 'Kết nối Google Sheets đã hết hạn. Kết nối lại trong claude.ai (Cài đặt → Connectors) rồi bấm Tải lại.',
+        selection_required: 'Có nhiều kết nối Google Sheets. Chọn một kết nối khi claude.ai hỏi, rồi bấm Tải lại.',
+        not_in_manifest: 'Trang chưa được phép đọc Google Sheets. Tải lại trang và bấm Cho phép khi được hỏi.',
+        blocked_by_policy: 'Tổ chức đang chặn đọc Google Sheets từ trang này.',
+        approval_required: 'Tổ chức yêu cầu duyệt từng lần đọc Google Sheets, trang chưa hỗ trợ.',
+        server_unavailable: 'Google Sheets tạm thời không phản hồi. Bấm Tải lại sau ít phút.',
+        tool_error: 'Google Sheets báo lỗi khi đọc tab này. Kiểm tra tên tab và quyền xem file.',
+        mcp_unavailable: 'Mục này chỉ đọc được dữ liệu khi mở trang trên claude.ai.'
+      };
+      var nf = new Intl.NumberFormat('vi-VN');
+      var f = function (v) { return nf.format(Math.round(v || 0)); };
+      var pct = function (v) { return nf.format(Math.round((v || 0) * 1000) / 10) + '%'; };
+      var dmy = function (k) { var p = String(k || '').split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : String(k || ''); };
+      var compact = function (v) { return v >= 1e6 ? nf.format(Math.round(v / 1e5) / 10) + ' tr' : v >= 1e3 ? nf.format(Math.round(v / 1e3)) + ' k' : nf.format(v); };
+      var defaultTab = function () { var d = new Date(); return 'Tháng ' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear(); };
+      var sumBy = function (rs, c) { return rs.reduce(function (s, r) { return s + (r[c] || 0); }, 0); };
+      var tabOf = function (d) { return 'Tháng ' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear(); };
+
+      // ---- Đọc sheet (người có kết nối) và bản lưu chung (mọi người dùng bộ nhớ chung, gồm Nhóm 2) ----
+      var snapKey = function (t) { var mm = String(t || '').match(/(\d{1,2})\.(\d{4})/); return 'kpisnap_' + (mm ? mm[2] + '-' + mm[1].padStart(2, '0') : String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 40)); };
+      function readSheet(t, refresh) {
+        var c = window.claude;
+        var ready = c && c.use ? c.use('mcp') : Promise.resolve(null);
+        return ready.then(function (mcp) {
+          if (!mcp) throw { code: 'mcp_unavailable' };
+          return mcp.callTool('Google Sheets', 'get_values', { spreadsheetId: SHEET_ID, range: "'" + t.replace(/'/g, "''") + "'!A1:AV" }, refresh ? { cache: { refresh: true, staleTime: 60000 } } : { cache: { staleTime: 60000 } });
+        }).then(function (res) {
+          var a = typeof res.payload === 'string' ? JSON.parse(res.payload) : res.payload;
+          if (!a || !Array.isArray(a.values)) throw { code: 'tool_error' };
+          return { values: a.values, at: res.cache && res.cache.storedAt ? res.cache.storedAt : Date.now() };
+        });
+      }
+      var snapSaved = {};
+      function saveSnap(t, values, at) {
+        var sh = window.__fscShared;
+        if (!sh || !sh.publishSnapshot) return;
+        var key = snapKey(t), vs = JSON.stringify(values), prev = snapSaved[key];
+        if (prev && prev.vs === vs && Date.now() - prev.t < 30 * 60000) return; // không đổi: tối đa 30 phút ghi 1 lần
+        var body = JSON.stringify({ fmt: 'KPI_FSC', tab: t, at: at || Date.now(), values: values });
+        Promise.resolve(window.__fscDbReady).then(function () { sh.publishSnapshot(key, body); snapSaved[key] = { vs: vs, t: Date.now() }; });
+      }
+      function loadSnap(t) {
+        var sh = window.__fscShared;
+        if (!sh || !sh.readSnapshot) return Promise.resolve(null);
+        return sh.readSnapshot(snapKey(t)).then(function (txt) {
+          if (!txt) return null;
+          var o = JSON.parse(txt);
+          return o && Array.isArray(o.values) ? o : null;
+        }).catch(function () { return null; });
+      }
+      // Chủ trang / Nhóm 3 mở Dashboard: đọc lại tháng này và tháng trước mỗi 15 phút, lưu vào bộ nhớ chung.
+      var AUTO_STOP = ['mcp_unavailable', 'not_in_manifest', 'server_not_connected', 'selection_required', 'server_not_found', 'blocked_by_policy', 'approval_required', 'needs_reauth'];
+      var autoTimer = null, autoStopped = false;
+      function autoSync() {
+        if (autoStopped) return;
+        var d = new Date();
+        var tabs = [tabOf(d), tabOf(new Date(d.getFullYear(), d.getMonth() - 1, 1))];
+        tabs.reduce(function (seq, t) {
+          return seq.then(function () {
+            if (autoStopped) return;
+            return readSheet(t, true).then(function (r) { saveSnap(t, r.values, r.at); })
+              .catch(function (e) { if (e && AUTO_STOP.indexOf(e.code) >= 0) autoStopped = true; });
+          });
+        }, Promise.resolve());
+      }
+      window.__fscKpiAutoSync = function () {
+        if (autoTimer) return;
+        setTimeout(autoSync, 20000);
+        autoTimer = setInterval(autoSync, 15 * 60000);
+      };
+
+      function parse(payload) {
+        var a = typeof payload === 'string' ? JSON.parse(payload) : payload;
+        if (!a || !Array.isArray(a.values)) throw { code: 'tool_error' };
+        var head = a.values[0] || [];
+        var at = NAMES.map(function (n) { return head.findIndex(function (x) { return String(x).trim() === n; }); });
+        var num = function (s) { var t = String(s == null ? '' : s).replace(/,/g, '').trim(); return t === '' || isNaN(Number(t)) ? 0 : Number(t); };
+        var day = function (s) { var t = String(s == null ? '' : s).trim(); var m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); return m ? m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0') : t; };
+        var rows = [], seen = {};
+        a.values.slice(1).forEach(function (r, i) {
+          if (at[2] < 0 || !String(r[at[2]] == null ? '' : r[at[2]]).trim()) return;
+          var o = { dong: i + 2 };
+          NAMES.forEach(function (n, k) { var v = at[k] < 0 ? '' : (r[at[k]] == null ? '' : r[at[k]]); o[n] = n === 'Ngày' ? day(v) : NUMS[n] ? num(v) : String(v).trim(); });
+          o.nhom = groupOf(o['Lỗi']);
+          var key = [o['Ngày'], o['Chi nhánh nhận'], o['Mã hàng'], o['Chênh lệch'], o['PT chuyển hàng']].join('|');
+          o.trungVoi = seen[key] || null;
+          if (!seen[key]) seen[key] = o.dong;
+          rows.push(o);
+        });
+        return { rows: rows, missing: NAMES.filter(function (n, k) { return at[k] < 0; }) };
+      }
+
+      var card = 'bg-white border border-slate-200 rounded-2xl shadow-sm';
+      var th = 'px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-500 bg-slate-50 border-b border-slate-200 sticky top-0';
+      var td = 'px-3 py-2 border-b border-slate-100';
+
+      function Tile(p) {
+        return h('div', { className: card + ' p-4 flex flex-col gap-1' },
+          h('span', { className: 'text-xs font-semibold text-slate-500 flex items-center gap-2' }, p.dot ? h('span', { className: 'w-2.5 h-2.5 rounded-sm ' + p.dot }) : null, p.label),
+          h('span', { className: 'text-2xl font-bold tabular-nums ' + (p.tone || 'text-slate-800') }, p.value),
+          p.sub ? h('span', { className: 'text-xs text-slate-500' }, p.sub) : null);
+      }
+      function CardHead(p) {
+        return h('div', { className: 'px-4 py-3 border-b border-slate-100' },
+          h('h3', { className: 'text-sm font-bold text-slate-800' }, p.title),
+          p.note ? h('p', { className: 'text-xs text-slate-500' }, p.note) : null);
+      }
+      function Table(p) {
+        return h('div', { className: 'overflow-auto ' + (p.max || 'max-h-[440px]') },
+          h('table', { className: 'w-full text-xs tabular-nums' },
+            h('thead', null, h('tr', null, p.cols.map(function (c, i) { return h('th', { key: i, className: th + (c.n ? ' text-right' : ' text-left') + (c.cls ? ' ' + c.cls : '') }, c.t); }))),
+            h('tbody', null, p.rows.length ? p.rows.map(function (r, i) {
+              return h('tr', { key: i, className: (p.rowCls ? p.rowCls(r) : '') + ' hover:bg-slate-50' }, p.cols.map(function (c, j) {
+                return h('td', { key: j, className: td + (c.n ? ' text-right' : '') + (c.td ? ' ' + c.td : '') }, c.v(r));
+              }));
+            }) : h('tr', null, h('td', { colSpan: p.cols.length, className: 'px-3 py-6 text-center text-slate-500' }, p.empty || 'Không có dòng nào.')))));
+      }
+      function Bar(p) {
+        return h('div', { className: 'h-2 rounded bg-slate-100 overflow-hidden min-w-[60px]' }, h('div', { className: 'h-2 rounded ' + (p.cls || 'bg-red-400'), style: { width: Math.max(0, Math.min(100, p.w)) + '%' } }));
+      }
+
+      function KpiFscModule(props) {
+        var snapOnly = !!(props && props.snapshotOnly);
+        var _t = useState(defaultTab), tab = _t[0], setTab = _t[1];
+        var _d = useState(defaultTab), draft = _d[0], setDraft = _d[1];
+        var _s = useState({ status: 'loading' }), st = _s[0], setSt = _s[1];
+        var _y = useState(null), pick = _y[0], setPick = _y[1];
+        var _n = useState(0), nonce = _n[0], setNonce = _n[1];
+        var _h = useState(null), hover = _h[0], setHover = _h[1];
+
+        useEffect(function () {
+          var alive = true;
+          setSt(function (prev) { return prev.rows ? Object.assign({}, prev, { status: 'refreshing' }) : { status: 'loading' }; });
+          var fromSnap = function (code) {
+            return loadSnap(tab).then(function (o) {
+              if (!alive) return;
+              if (!o) {
+                var msg = snapOnly || code === 'tool_error'
+                  ? (code === 'tool_error' && !snapOnly ? ERR.tool_error : 'Chưa có dữ liệu KPI cho "' + tab + '". Sheet lệch hàng chưa có tab này.')
+                  : (ERR[code] || ('Không đọc được dữ liệu (' + code + ').'));
+                setSt({ status: 'error', code: code, message: msg });
+                return;
+              }
+              var out = parse({ values: o.values });
+              setSt({ status: 'ok', rows: out.rows, missing: out.missing, at: o.at, snap: true,
+                warn: snapOnly ? '' : 'Không đọc trực tiếp được Google Sheets (' + (ERR[code] || code) + '). Đang hiện bản lưu chung gần nhất.' });
+            });
+          };
+          if (snapOnly) { fromSnap('no_snapshot'); return function () { alive = false; }; }
+          readSheet(tab, !!nonce).then(function (r) {
+            if (!alive) return;
+            var out = parse({ values: r.values });
+            setSt({ status: 'ok', rows: out.rows, missing: out.missing, at: r.at });
+            saveSnap(tab, r.values, r.at);
+          }).catch(function (e) {
+            if (!alive) return;
+            fromSnap((e && e.code) || 'upstream_error');
+          });
+          return function () { alive = false; };
+        }, [tab, nonce, snapOnly]);
+
+        var rows = st.rows || [];
+        var m = useMemo(function () {
+          var tong = sumBy(rows, 'Tổng GT');
+          var groups = GROUPS.concat(['Chưa phân loại']).map(function (g) {
+            var rs = rows.filter(function (r) { return r.nhom === g; });
+            return { g: g, dong: rs.length, gt: sumBy(rs, 'Tổng GT'), sl: sumBy(rs, 'Chênh lệch'), tyle: tong ? sumBy(rs, 'Tổng GT') / tong : 0 };
+          });
+          var byG = {}; groups.forEach(function (x) { byG[x.g] = x; });
+          var dm = {};
+          rows.forEach(function (r) {
+            var k = r['Ngày'];
+            if (!dm[k]) dm[k] = { ngay: k, chuyen: 0, nhan: 0, chenh: 0, dong: 0, gt: 0, 'Pick hàng': 0, 'Chia hàng': 0, 'Kiểm soát tồn kho': 0 };
+            var o = dm[k];
+            o.chuyen += r['Số lượng chuyển']; o.nhan += r['Số lượng nhận']; o.chenh += r['Chênh lệch']; o.dong += 1; o.gt += r['Tổng GT'];
+            o[r.nhom === 'Chưa phân loại' ? 'Kiểm soát tồn kho' : r.nhom] += r['Tổng GT'];
+          });
+          var days = Object.keys(dm).sort().map(function (k) { return dm[k]; });
+          var agg = function (key, extra) {
+            var mm = {};
+            rows.forEach(function (r) { var k = extra ? extra(r) : r[key]; if (!mm[k]) mm[k] = { k: k, r: r, dong: 0, sl: 0, gt: 0, pick: 0, chia: 0 }; var o = mm[k]; o.dong += 1; o.sl += r['Chênh lệch']; o.gt += r['Tổng GT']; if (r.nhom === 'Pick hàng') o.pick += 1; if (r.nhom === 'Chia hàng') o.chia += 1; });
+            return Object.keys(mm).map(function (k) { return mm[k]; }).sort(function (a, b) { return b.gt - a.gt; });
+          };
+          var trung = rows.filter(function (r) { return r.trungVoi; });
+          var thieuNguoi = rows.filter(function (r) { return !r['User'] || r['User'].toLowerCase() === 'không tìm thấy'; }).length;
+          return {
+            tong: tong, groups: groups, byG: byG, days: days,
+            stores: agg('Chi nhánh nhận').slice(0, 10),
+            skus: agg('Tên SP').slice(0, 10),
+            people: agg(null, function (r) { return (r['User'] || '(trống)') + ' · Ca ' + (r['Ca/ Giờ Chia'] || '?'); }),
+            trung: trung, trungGt: sumBy(trung, 'Tổng GT'), thieuNguoi: thieuNguoi,
+            chuyen: sumBy(rows, 'Số lượng chuyển'), nhan: sumBy(rows, 'Số lượng nhận'), chenh: sumBy(rows, 'Chênh lệch')
+          };
+        }, [rows]);
+        var t09 = TRUY_THU_T09.reduce(function (s, r) { return s + r[2] * r[4]; }, 0);
+
+        var keys = m.days.map(function (d) { return d.ngay; });
+        var cur = keys.indexOf(pick) >= 0 ? pick : (keys[keys.length - 1] || null);
+        var idx = keys.indexOf(cur);
+        var curDay = m.days[idx] || { chuyen: 0, nhan: 0, chenh: 0, dong: 0, gt: 0 };
+        var det = rows.filter(function (r) { return r['Ngày'] === cur; });
+        var maxDayGt = Math.max.apply(null, [1].concat(m.days.map(function (d) { return d.gt; })));
+        var maxChenh = Math.max.apply(null, [1].concat(m.days.map(function (d) { return d.chenh; })));
+        var busy = st.status === 'loading' || st.status === 'refreshing';
+        var chia = m.byG['Chia hàng'] || { gt: 0, dong: 0, tyle: 0 };
+        var pickG = m.byG['Pick hàng'] || { gt: 0, dong: 0 };
+        var hv = hover ? m.days.find(function (d) { return d.ngay === hover; }) : null;
+
+        return h('div', { className: 'space-y-5' },
+          // Đầu trang
+          h('div', { className: card + ' p-5 flex flex-wrap items-end justify-between gap-4' },
+            h('div', { className: 'space-y-1 max-w-3xl' },
+              h('h2', { className: 'text-lg font-bold text-slate-800' }, 'KPI FSC · Kho lạnh, ' + tab.toLowerCase()),
+              rows.length ? h('p', { className: 'text-sm text-slate-700' },
+                'Chia hàng chiếm ', h('b', null, pct(chia.tyle)), ' giá trị lệch hàng tại siêu thị KFM. ',
+                m.trung.length ? h('span', null, 'Có ', h('b', null, f(m.trung.length)), ' dòng nhập trùng và ') : null,
+                h('b', null, f(m.thieuNguoi)), ' dòng chưa có người chia, cần làm sạch trước khi chấm KPI theo người.') : null,
+              h('p', { className: 'text-xs text-slate-500' }, 'Lệch hàng đọc trực tiếp file ', h('a', { href: SHEET_URL, target: '_blank', rel: 'noopener', className: 'text-blue-600 hover:underline' }, 'SCF - FSC: LỆCH HÀNG HÓA TẠI ST'), '. Kỳ chấm KPI của công ty là 26–25.'),
+              st.at ? h('p', { className: 'text-[11px] text-slate-400' }, 'Cập nhật lúc ' + new Date(st.at).toLocaleString('vi-VN') + '') : null),
+            h('div', { className: 'flex flex-wrap items-end gap-2' },
+              h('label', { className: 'text-xs font-semibold text-slate-600 flex flex-col gap-1', htmlFor: 'kpi-fsc-tab' }, 'Tab trong sheet',
+                h('input', { id: 'kpi-fsc-tab', value: draft, onChange: function (e) { setDraft(e.target.value); }, onKeyDown: function (e) { if (e.key === 'Enter' && draft.trim()) { setTab(draft.trim()); setPick(null); } }, className: 'px-3 py-2 border border-slate-300 rounded-lg text-sm w-44 focus:outline-none focus:ring-2 focus:ring-blue-500' })),
+              h('button', { type: 'button', disabled: busy, onClick: function () { if (draft.trim() && draft.trim() !== tab) { setTab(draft.trim()); setPick(null); } else setNonce(nonce + 1); }, className: 'px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-sm font-semibold' }, busy ? 'Đang tải…' : 'Tải lại'))),
+
+          st.status === 'error' ? h('div', { className: 'bg-red-50 border border-red-200 text-red-800 rounded-xl px-4 py-3 text-sm' }, st.message) : null,
+          st.warn ? h('div', { className: 'bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm' }, st.warn) : null,
+          st.missing && st.missing.length ? h('div', { className: 'bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm' }, 'Tab "' + tab + '" thiếu cột: ' + st.missing.join(', ') + '.') : null,
+          st.status === 'loading' ? h('div', { className: card + ' p-10 text-center text-sm text-slate-500' }, snapOnly ? 'Đang tải dữ liệu KPI…' : 'Đang đọc dữ liệu từ Google Sheets…') : null,
+          st.status === 'ok' && !rows.length ? h('div', { className: card + ' p-10 text-center text-sm text-slate-500' }, 'Tab "' + tab + '" chưa có dòng lệch nào.') : null,
+
+          // Ô số
+          h('div', { className: 'grid grid-cols-2 lg:grid-cols-5 gap-4' },
+            h(Tile, { label: 'Tổng giá trị lệch', value: rows.length ? f(m.tong) + ' đ' : '—', sub: rows.length ? f(rows.length) + ' dòng · ' + f(m.stores.length ? new Set(rows.map(function (r) { return r['Chi nhánh nhận']; })).size : 0) + ' cửa hàng' : '' }),
+            h(Tile, { label: 'Chia hàng (DC giao thiếu)', dot: COLOR['Chia hàng'], value: rows.length ? f(chia.gt) + ' đ' : '—', tone: 'text-red-600', sub: rows.length ? f(chia.dong) + ' dòng' : '' }),
+            h(Tile, { label: 'Pick hàng (DC pick sai)', dot: COLOR['Pick hàng'], value: rows.length ? f(pickG.gt) + ' đ' : '—', sub: rows.length ? f(pickG.dong) + ' dòng' : '' }),
+            h(Tile, { label: 'Tồn kho, truy thu T09', dot: COLOR['Kiểm soát tồn kho'], value: f(t09) + ' đ', sub: TRUY_THU_T09.length + ' mã thất thoát, ngày 28/09' }),
+            h(Tile, { label: 'Dòng nhập trùng', value: rows.length ? f(m.trungGt) + ' đ' : '—', tone: m.trung.length ? 'text-amber-600' : 'text-slate-800', sub: rows.length ? f(m.trung.length) + ' dòng đang bị cộng hai lần' : '' })),
+
+          // Biểu đồ theo ngày
+          rows.length ? h('div', { className: card },
+            h(CardHead, { title: 'Giá trị lệch theo ngày', note: 'Tổng GT mỗi ngày, chia theo dịch vụ chịu trách nhiệm. Bấm một cột để xem chi tiết ngày đó.' }),
+            h('div', { className: 'px-4 pt-3 flex flex-wrap gap-4 text-xs text-slate-500' }, ['Chia hàng', 'Pick hàng', 'Kiểm soát tồn kho'].map(function (g) { return h('span', { key: g, className: 'flex items-center gap-1.5' }, h('span', { className: 'w-2.5 h-2.5 rounded-sm ' + COLOR[g] }), g); })),
+            h('div', { className: 'relative px-4 pb-4 pt-6' },
+              hv ? h('div', { className: 'absolute top-0 right-4 bg-white border border-slate-200 rounded-lg shadow px-3 py-1.5 text-xs tabular-nums z-10' },
+                h('div', { className: 'text-slate-500' }, dmy(hv.ngay) + ' · ' + hv.dong + ' dòng'),
+                ['Chia hàng', 'Pick hàng', 'Kiểm soát tồn kho'].map(function (g) { return h('div', { key: g, className: 'flex items-center gap-1.5' }, h('span', { className: 'w-2 h-2 rounded-sm ' + COLOR[g] }), g + ': ' + f(hv[g]) + ' đ'); })) : null,
+              h('div', { className: 'flex items-end gap-1 sm:gap-2 h-56 border-b border-slate-300' }, m.days.map(function (d) {
+                var on = d.ngay === cur;
+                return h('button', { key: d.ngay, type: 'button', 'aria-label': dmy(d.ngay) + ': ' + f(d.gt) + ' đ', onClick: function () { setPick(d.ngay); }, onMouseEnter: function () { setHover(d.ngay); }, onMouseLeave: function () { setHover(null); }, onFocus: function () { setHover(d.ngay); }, onBlur: function () { setHover(null); },
+                  className: 'flex-1 h-full flex flex-col justify-end items-center min-w-0 ' + (on ? '' : 'opacity-80 hover:opacity-100') },
+                  h('span', { className: 'text-[10px] text-slate-500 tabular-nums mb-1 hidden sm:block' }, compact(d.gt)),
+                  h('div', { className: 'w-full max-w-[36px] flex flex-col-reverse rounded-t overflow-hidden' + (on ? ' ring-2 ring-slate-800 ring-offset-1' : ''), style: { height: Math.round(d.gt / maxDayGt * 100) + '%' } },
+                    ['Chia hàng', 'Pick hàng', 'Kiểm soát tồn kho'].map(function (g) { return d[g] ? h('div', { key: g, className: COLOR[g], style: { height: (d[g] / (d.gt || 1) * 100) + '%' } }) : null; })));
+              })),
+              h('div', { className: 'flex gap-1 sm:gap-2 mt-1' }, m.days.map(function (d) { return h('span', { key: d.ngay, className: 'flex-1 text-center text-[10px] text-slate-500 tabular-nums min-w-0 ' + (d.ngay === cur ? 'font-bold text-slate-800' : '') }, dmy(d.ngay).slice(0, 5)); })))) : null,
+
+          // Chi tiết theo ngày
+          rows.length ? h('div', { className: 'grid grid-cols-1 xl:grid-cols-5 gap-5 items-start' },
+            h('div', { className: 'xl:col-span-2 ' + card + ' overflow-hidden' },
+              h(CardHead, { title: 'Tổng hợp từng ngày', note: 'SL chuyển, SL nhận, chênh lệch, số lỗi và giá trị. Mỗi dòng lệch tính là 1 lỗi. Bấm vào ngày để xem chi tiết.' }),
+              h('div', { className: 'overflow-auto max-h-[560px]' },
+                h('table', { className: 'w-full text-xs tabular-nums' },
+                  h('thead', null, h('tr', null,
+                    h('th', { className: th + ' text-left' }, 'Ngày'),
+                    h('th', { className: th + ' text-right' }, 'SL chuyển'),
+                    h('th', { className: th + ' text-right' }, 'SL nhận'),
+                    h('th', { className: th + ' text-right' }, 'Chênh lệch'),
+                    h('th', { className: th + ' text-right' }, 'Số lỗi'),
+                    h('th', { className: th + ' text-right' }, 'Giá trị (đ)'),
+                    h('th', { className: th }, ''))),
+                  h('tbody', null, m.days.map(function (d) {
+                    var on = d.ngay === cur;
+                    return h('tr', { key: d.ngay, className: on ? 'bg-blue-50' : 'hover:bg-slate-50' },
+                      h('td', { className: td + ' py-0' }, h('button', { type: 'button', onClick: function () { setPick(d.ngay); }, 'aria-pressed': on, className: 'py-2 font-semibold text-blue-700 hover:underline' }, dmy(d.ngay))),
+                      h('td', { className: td + ' text-right' }, f(d.chuyen)),
+                      h('td', { className: td + ' text-right' }, f(d.nhan)),
+                      h('td', { className: td + ' text-right font-bold text-red-600' }, f(d.chenh)),
+                      h('td', { className: td + ' text-right font-semibold' }, f(d.dong)),
+                      h('td', { className: td + ' text-right' }, f(d.gt)),
+                      h('td', { className: td }, h(Bar, { w: d.chenh / maxChenh * 100 })));
+                  })),
+                  h('tfoot', null, h('tr', { className: 'font-bold bg-slate-50' },
+                    h('td', { className: 'px-3 py-2 border-t-2 border-slate-300' }, 'Tổng'),
+                    h('td', { className: 'px-3 py-2 border-t-2 border-slate-300 text-right' }, f(m.chuyen)),
+                    h('td', { className: 'px-3 py-2 border-t-2 border-slate-300 text-right' }, f(m.nhan)),
+                    h('td', { className: 'px-3 py-2 border-t-2 border-slate-300 text-right text-red-600' }, f(m.chenh)),
+                    h('td', { className: 'px-3 py-2 border-t-2 border-slate-300 text-right' }, f(rows.length)),
+                    h('td', { className: 'px-3 py-2 border-t-2 border-slate-300 text-right' }, f(m.tong)),
+                    h('td', { className: 'px-3 py-2 border-t-2 border-slate-300' })))))),
+            h('div', { className: 'xl:col-span-3 ' + card + ' overflow-hidden' },
+              h('div', { className: 'px-4 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3' },
+                h('h3', { className: 'text-sm font-bold text-slate-800' }, 'Chi tiết ngày ' + dmy(cur)),
+                h('div', { className: 'flex items-center gap-2' },
+                  h('button', { type: 'button', 'aria-label': 'Ngày trước', disabled: idx <= 0, onClick: function () { setPick(keys[idx - 1]); }, className: 'w-9 h-9 border border-slate-300 rounded-lg disabled:opacity-40 hover:bg-slate-50' }, '‹'),
+                  h('select', { 'aria-label': 'Chọn ngày', value: cur || '', onChange: function (e) { setPick(e.target.value); }, className: 'h-9 px-3 border border-slate-300 rounded-lg text-sm font-semibold bg-white' },
+                    keys.map(function (k) { return h('option', { key: k, value: k }, dmy(k)); })),
+                  h('button', { type: 'button', 'aria-label': 'Ngày sau', disabled: idx < 0 || idx >= keys.length - 1, onClick: function () { setPick(keys[idx + 1]); }, className: 'w-9 h-9 border border-slate-300 rounded-lg disabled:opacity-40 hover:bg-slate-50' }, '›'))),
+              h('div', { className: 'grid grid-cols-2 md:grid-cols-4 gap-3 p-4' },
+                h('div', { className: 'rounded-xl border border-slate-200 bg-slate-50 px-3 py-2' }, h('div', { className: 'text-[11px] text-slate-500' }, 'SL chuyển'), h('div', { className: 'text-lg font-bold text-blue-700 tabular-nums' }, f(curDay.chuyen))),
+                h('div', { className: 'rounded-xl border border-slate-200 bg-slate-50 px-3 py-2' }, h('div', { className: 'text-[11px] text-slate-500' }, 'SL nhận'), h('div', { className: 'text-lg font-bold text-teal-700 tabular-nums' }, f(curDay.nhan))),
+                h('div', { className: 'rounded-xl border border-red-200 bg-red-50 px-3 py-2' }, h('div', { className: 'text-[11px] text-red-700' }, 'Chênh lệch'), h('div', { className: 'text-lg font-bold text-red-600 tabular-nums' }, f(curDay.chenh))),
+                h('div', { className: 'rounded-xl border border-slate-200 bg-slate-50 px-3 py-2' }, h('div', { className: 'text-[11px] text-slate-500' }, f(curDay.dong) + ' lỗi · giá trị'), h('div', { className: 'text-lg font-bold text-slate-800 tabular-nums' }, f(curDay.gt) + ' đ'))),
+              h('div', { className: 'border-t border-slate-100' },
+                h(Table, { max: 'max-h-[560px]', rows: det, empty: 'Ngày này không có dòng lệch.', rowCls: function (r) { return r.trungVoi ? 'bg-amber-50' : ''; }, cols: [
+                  { t: 'Dòng', n: 1, td: 'text-slate-500', v: function (r) { return r.dong; } },
+                  { t: 'Cửa hàng', td: 'min-w-[160px]', v: function (r) { return r['Chi nhánh nhận']; } },
+                  { t: 'Mã hàng', td: 'text-slate-600', v: function (r) { return r['Mã hàng']; } },
+                  { t: 'Tên SP', td: 'min-w-[220px]', v: function (r) { return r['Tên SP']; } },
+                  { t: 'ĐVT', td: 'text-slate-600', v: function (r) { return r['ĐVT']; } },
+                  { t: 'SL chuyển', n: 1, cls: 'text-blue-700', v: function (r) { return f(r['Số lượng chuyển']); } },
+                  { t: 'SL nhận', n: 1, cls: 'text-teal-700', v: function (r) { return f(r['Số lượng nhận']); } },
+                  { t: 'Chênh lệch', n: 1, cls: 'text-red-600', td: 'font-bold text-red-600', v: function (r) { return f(r['Chênh lệch']); } },
+                  { t: 'Số lỗi', n: 1, td: 'font-semibold', v: function () { return '1'; } },
+                  { t: 'Giá trị (đ)', n: 1, v: function (r) { return f(r['Tổng GT']); } },
+                  { t: 'Lỗi', td: 'whitespace-nowrap', v: function (r) { return h(React.Fragment, null,
+                    h('span', { className: 'inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ' + (r.nhom === 'Pick hàng' ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800') }, r['Lỗi'] || '—'),
+                    r.trungVoi ? h('span', { className: 'ml-1 inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-200 text-amber-900' }, 'Trùng dòng ' + r.trungVoi) : null); } }] })))) : null,
+
+          // KPI theo dịch vụ
+          h('div', { className: 'space-y-3' },
+            h('div', null,
+              h('h3', { className: 'text-base font-bold text-slate-800' }, 'KPI theo dịch vụ'),
+              h('p', { className: 'text-xs text-slate-500' }, 'Theo tài liệu "Đầu mục công việc & KPI kho lạnh FSC" (14/10/2026). Mục tiêu và trọng số là mức đề xuất: chạy thử kỳ 26/10–25/11 rồi chốt.')),
+            h('div', { className: 'grid grid-cols-1 xl:grid-cols-3 gap-4' }, GROUPS.map(function (g) {
+              var k = KPI[g], s = m.byG[g] || { gt: 0, dong: 0 };
+              return h('div', { key: g, className: card + ' overflow-hidden' },
+                h('div', { className: 'px-4 py-3 border-b border-slate-100 space-y-1' },
+                  h('h4', { className: 'text-sm font-bold text-slate-800 flex items-center gap-2' }, h('span', { className: 'w-2.5 h-2.5 rounded-sm ' + COLOR[g] }), g),
+                  h('div', { className: 'text-sm tabular-nums' }, h('b', { className: 'text-lg' }, rows.length ? f(s.gt) : '—'), ' đ lệch · ', h('b', null, rows.length ? f(s.dong) : '—'), ' dòng'),
+                  h('p', { className: 'text-xs text-slate-500' }, k.note)),
+                h(Table, { max: '', rows: k.rows, cols: [
+                  { t: 'KPI', td: 'font-semibold text-slate-700', v: function (r) { return r[0]; } },
+                  { t: 'Mục tiêu', td: 'whitespace-nowrap', v: function (r) { return r[1]; } },
+                  { t: 'Trọng số', n: 1, v: function (r) { return r[2]; } },
+                  { t: 'Nguồn', td: 'text-slate-500 min-w-[140px]', v: function (r) { return r[3]; } },
+                  { t: 'Trạng thái', v: function (r) { return h('span', { className: 'inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap ' + (r[4] === 'part' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600') }, r[4] === 'part' ? 'Một phần' : 'Cần nguồn'); } }] }));
+            })),
+            h('div', { className: card + ' p-4 space-y-2' },
+              h('h4', { className: 'text-sm font-bold text-slate-800' }, 'Cách tính điểm'),
+              h('p', { className: 'text-xs text-slate-600' }, 'Điểm KPI = Σ (Trọng số × min(100; Thực tế ÷ Mục tiêu × 100)). KPI tính theo số lỗi dùng thang trừ điểm, không âm.'),
+              h('div', { className: 'flex flex-wrap gap-2 text-xs' },
+                [['A', 'từ 95', '1,2', 'bg-emerald-100 text-emerald-800'], ['B', '85 đến dưới 95', '1,0', 'bg-blue-100 text-blue-800'], ['C', '70 đến dưới 85', '0,7', 'bg-amber-100 text-amber-800'], ['D', 'dưới 70', '0', 'bg-red-100 text-red-800']].map(function (x) {
+                  return h('span', { key: x[0], className: 'px-2.5 py-1 rounded-full font-semibold ' + x[3] }, x[0] + ': ' + x[1] + ', hệ số ' + x[2]);
+                })))),
+
+          // Điểm nóng
+          rows.length ? h('div', { className: 'grid grid-cols-1 xl:grid-cols-2 gap-5' },
+            h('div', { className: card + ' overflow-hidden' },
+              h(CardHead, { title: '10 cửa hàng lệch nhiều nhất', note: 'Theo tổng giá trị lệch trong tab.' }),
+              h(Table, { rows: m.stores, cols: [
+                { t: 'Cửa hàng', td: 'min-w-[180px]', v: function (r) { return r.k; } },
+                { t: 'Dòng', n: 1, v: function (r) { return f(r.dong); } },
+                { t: 'Giá trị (đ)', n: 1, v: function (r) { return f(r.gt); } },
+                { t: '', v: function (r) { return h(Bar, { w: r.gt / ((m.stores[0] || {}).gt || 1) * 100, cls: 'bg-blue-400' }); } }] })),
+            h('div', { className: card + ' overflow-hidden' },
+              h(CardHead, { title: '10 sản phẩm lệch nhiều nhất', note: 'Mã lặp lại ở nhiều cửa hàng là mã cần kiểm tra khi pick và chia.' }),
+              h(Table, { rows: m.skus, cols: [
+                { t: 'Sản phẩm', td: 'min-w-[200px]', v: function (r) { return r.k; } },
+                { t: 'Dòng', n: 1, v: function (r) { return f(r.dong); } },
+                { t: 'SL lệch', n: 1, v: function (r) { return f(r.sl); } },
+                { t: 'Giá trị (đ)', n: 1, v: function (r) { return f(r.gt); } }] }))) : null,
+
+          // Người chia và dữ liệu cần làm sạch
+          rows.length ? h('div', { className: 'grid grid-cols-1 xl:grid-cols-2 gap-5' },
+            h('div', { className: card + ' overflow-hidden' },
+              h(CardHead, { title: 'Lỗi theo người chia và ca', note: 'Cột User và Ca/Giờ chia. "không tìm thấy" là dòng chưa tra được người chia.' }),
+              h(Table, { rows: m.people, cols: [
+                { t: 'Người chia · Ca', td: 'min-w-[160px]', v: function (r) { return r.k; } },
+                { t: 'Pick sai', n: 1, v: function (r) { return f(r.pick); } },
+                { t: 'Chia thiếu', n: 1, v: function (r) { return f(r.chia); } },
+                { t: 'Giá trị (đ)', n: 1, v: function (r) { return f(r.gt); } }] })),
+            h('div', { className: card + ' overflow-hidden' },
+              h(CardHead, { title: 'Dòng nhập trùng cần xóa', note: 'Cùng ngày, cửa hàng, mã hàng, SL lệch và phiếu PT với một dòng phía trên. Các dòng này vẫn đang được cộng vào tổng.' }),
+              h(Table, { rows: m.trung, empty: 'Không có dòng nhập trùng.', cols: [
+                { t: 'Dòng', n: 1, v: function (r) { return r.dong; } },
+                { t: 'Trùng dòng', n: 1, v: function (r) { return r.trungVoi; } },
+                { t: 'Ngày', v: function (r) { return dmy(r['Ngày']); } },
+                { t: 'Sản phẩm', td: 'min-w-[200px]', v: function (r) { return r['Tên SP']; } },
+                { t: 'Giá trị (đ)', n: 1, v: function (r) { return f(r['Tổng GT']); } }] }))) : null,
+
+          // Truy thu T09
+          h('div', { className: card + ' overflow-hidden' },
+            h(CardHead, { title: 'Kiểm soát tồn kho · Truy thu thất thoát T09', note: 'Kho Đông - Lưu kho, truy thu FSC ngày 28/09/2026. Tổng ' + f(t09) + ' đ.' }),
+            h(Table, { max: 'max-h-[360px]', rows: TRUY_THU_T09.slice().sort(function (a, b) { return b[2] * b[4] - a[2] * a[4]; }), cols: [
+              { t: 'Mã sản phẩm', td: 'text-slate-600', v: function (r) { return r[0]; } },
+              { t: 'Tên sản phẩm', td: 'min-w-[220px]', v: function (r) { return r[1]; } },
+              { t: 'SL', n: 1, v: function (r) { return f(r[2]); } },
+              { t: 'ĐVT', v: function (r) { return r[3]; } },
+              { t: 'Giá vốn', n: 1, v: function (r) { return f(r[4]); } },
+              { t: 'Tổng giá vốn', n: 1, td: 'font-bold', v: function (r) { return f(r[2] * r[4]); } }] })));
+      }
+      window.KpiFscModule = KpiFscModule;
+    })();
+
+  </script>
+  <script>
+(function () {
+  'use strict';
+  var h = React.createElement, useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo;
+
+  // ===================== Tiện ích =====================
+  var nf0 = new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 });
+  var nf2 = new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 });
+  function fmtN(v, dp) { var n = Number(v) || 0; return dp ? nf2.format(n) : nf0.format(Math.round(n)); }
+  function dmy(iso) { var p = String(iso || '').slice(0, 10).split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : String(iso || ''); }
+  function pad(n) { return ('0' + n).slice(-2); }
+  function isoOf(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function today() { return isoOf(new Date()); }
+  // Kỳ 26 → 25: kỳ "yyyy-mm" chạy từ 26 tháng trước đến 25 tháng này.
+  function cycleKeyOf(iso) { var p = iso.split('-').map(Number), y = p[0], m = p[1]; if (p[2] >= 26) { m++; if (m > 12) { m = 1; y++; } } return y + '-' + pad(m); }
+  function cycleRange(key) {
+    var p = key.split('-').map(Number), y = p[0], m = p[1];
+    var py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+    return { from: py + '-' + pad(pm) + '-26', to: y + '-' + pad(m) + '-25' };
+  }
+  function shiftCycle(key, d) { var p = key.split('-').map(Number), x = new Date(p[0], p[1] - 1 + d, 1); return x.getFullYear() + '-' + pad(x.getMonth() + 1); }
+  function cycleLabel(key) { var p = key.split('-'); return 'Kỳ ' + p[1] + '/' + p[0]; }
+  function daysBetween(a, b) { return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000); }
+  function norm(s) { return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd'); }
+  function match(q, fields) { if (!q) return true; var t = norm(fields.join(' ')); return norm(q).split(/\s+/).filter(Boolean).every(function (w) { return t.indexOf(w) >= 0; }); }
+  function cx() { return Array.prototype.filter.call(arguments, Boolean).join(' '); }
+
+  // ===================== API =====================
+  var TOKEN_KEY = 'fscql_token', NAME_KEY = 'fscql_user';
+  function store(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
+  function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function api(action, body, tries) {
+    var payload = Object.assign({ action: action, token: load(TOKEN_KEY) || '' }, body || {});
+    tries = tries == null ? 2 : tries;
+    if (!/^https:\/\//.test(window.FSC_API_URL || '')) return Promise.reject(new Error('Trang chưa được gắn máy chủ (API_URL). Liên hệ FSC.'));
+    return fetch(window.FSC_API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .catch(function (e) {
+        if (tries > 0) return new Promise(function (res) { setTimeout(res, 1500); }).then(function () { return api(action, body, tries - 1); });
+        throw new Error('Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.');
+      })
+      .then(function (res) {
+        if (res && res.expired) { store(TOKEN_KEY, null); window.dispatchEvent(new Event('fsc-expired')); }
+        if (!res || !res.ok) throw new Error((res && res.error) || 'Máy chủ không trả lời.');
+        return res;
+      });
+  }
+  window.fscApi = api;
+
+  // KPI FSC dùng lại module của Dashboard: "bản lưu chung" lấy từ máy chủ (đọc thẳng sheet lệch hàng).
+  window.__fscDbReady = Promise.resolve(true);
+  window.__fscShared = {
+    readSnapshot: function (key) {
+      return api('kpi', { key: key }).then(function (r) { return r.values ? JSON.stringify({ fmt: 'KPI_FSC', tab: r.tab, at: r.at, values: r.values }) : null; });
+    }
+  };
+
+  // ===================== Xuất Excel =====================
+  function exportXlsx(fileName, cols, rows, total) {
+    if (!window.XLSX) { alert('Chưa tải được thư viện Excel, thử lại sau.'); return; }
+    var aoa = [cols.map(function (c) { return c.t; })];
+    rows.forEach(function (r) { aoa.push(cols.map(function (c) { var v = c.x ? c.x(r) : r[c.k]; return v == null ? '' : v; })); });
+    if (total) aoa.push(cols.map(function (c, i) { return i === 0 ? 'Tổng' : c.sum ? rows.reduce(function (s, r) { return s + (Number(c.x ? c.x(r) : r[c.k]) || 0); }, 0) : ''; }));
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = cols.map(function (c) { return { wch: c.wch || (c.num ? 12 : 16) }; });
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Data');
+    XLSX.writeFile(wb, fileName.replace(/[\\/:*?"<>|]/g, '_') + '.xlsx');
+  }
+
+  // ===================== Thành phần giao diện =====================
+  function Card(p) {
+    return h('div', { className: cx('px-3 py-2.5 rounded-xl border min-w-0', p.tone || 'bg-white border-slate-200') },
+      h('div', { className: 'text-[11px] font-semibold text-slate-500 truncate' }, p.label),
+      h('div', { className: cx('text-xl sm:text-2xl font-black tabular-nums truncate', p.color || 'text-slate-800') }, p.value),
+      p.sub ? h('div', { className: 'text-[11px] text-slate-400 truncate' }, p.sub) : null);
+  }
+  function Cards(p) { return h('div', { className: 'grid grid-cols-2 lg:grid-cols-4 gap-2' }, p.children); }
+
+  function Btn(p) {
+    return h('button', Object.assign({ type: 'button' }, p, {
+      className: cx('px-3 py-1.5 rounded-lg text-xs font-semibold border whitespace-nowrap disabled:opacity-50',
+        p.primary ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-500' : p.active ? 'bg-slate-800 border-slate-800 text-white' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50', p.className)
+    }), p.children);
+  }
+  function Seg(p) {
+    return h('div', { className: 'inline-flex rounded-lg border border-slate-300 overflow-hidden' }, p.options.map(function (o) {
+      return h('button', { key: o[0], type: 'button', onClick: function () { p.onChange(o[0]); },
+        className: cx('px-3 py-1.5 text-xs font-semibold', p.value === o[0] ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50') }, o[1]);
+    }));
+  }
+  function Field(p) { return h('label', { className: 'flex flex-col gap-0.5 text-[11px] font-semibold text-slate-500' }, p.label, p.children); }
+  var inputCls = 'px-2 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-800 bg-white min-w-0';
+  function Search(p) {
+    return h(Field, { label: 'Tìm' }, h('input', { type: 'search', value: p.value, placeholder: p.placeholder || 'Mã, tên, phiếu…', onChange: function (e) { p.onChange(e.target.value); }, className: inputCls + ' w-44 sm:w-56' }));
+  }
+  function DateRange(p) {
+    return h('div', { className: 'flex flex-wrap items-end gap-2' },
+      h(Field, { label: 'Từ ngày' }, h('input', { type: 'date', value: p.from, onChange: function (e) { p.onChange(e.target.value, p.to); }, className: inputCls })),
+      h(Field, { label: 'Đến ngày' }, h('input', { type: 'date', value: p.to, onChange: function (e) { p.onChange(p.from, e.target.value); }, className: inputCls })),
+      h('div', { className: 'flex gap-1 pb-0.5' },
+        h(Btn, { onClick: function () { var k = cycleKeyOf(today()); var r = cycleRange(k); p.onChange(r.from, r.to); } }, 'Kỳ này'),
+        h(Btn, { onClick: function () { var r = cycleRange(shiftCycle(cycleKeyOf(today()), -1)); p.onChange(r.from, r.to); } }, 'Kỳ trước')));
+  }
+  function CycleSel(p) {
+    var opts = p.options || (function () { var k = cycleKeyOf(today()), a = []; for (var i = 0; i < 12; i++) a.push(shiftCycle(k, -i)); return a; })();
+    return h(Field, { label: 'Kỳ (26 → 25)' }, h('select', { value: p.value, onChange: function (e) { p.onChange(e.target.value); }, className: inputCls },
+      opts.map(function (k) { return h('option', { key: k, value: k }, cycleLabel(k)); })));
+  }
+  function Toolbar(p) { return h('div', { className: 'flex flex-wrap items-end gap-2 bg-white p-3 rounded-2xl border border-slate-200' }, p.children); }
+  function Note(p) { return h('div', { className: cx('rounded-xl px-3 py-2 text-xs', p.tone === 'err' ? 'bg-red-50 text-red-700 border border-red-200' : p.tone === 'warn' ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-slate-100 text-slate-600') }, p.children); }
+  function Loading() { return h('div', { className: 'p-10 text-center text-sm text-slate-400' }, 'Đang tải dữ liệu…'); }
+
+  // Bảng dữ liệu: sắp xếp theo cột, dòng tổng, xem thêm, xuất Excel.
+  function Table(p) {
+    var cols = p.cols, _s = useState(p.sort || null), sort = _s[0], setSort = _s[1], _l = useState(300), lim = _l[0], setLim = _l[1];
+    useEffect(function () { setLim(300); }, [p.rows]);
+    var rows = useMemo(function () {
+      if (!sort) return p.rows;
+      var c = cols.find(function (x) { return x.k === sort.k; }); if (!c) return p.rows;
+      var get = function (r) { return c.x ? c.x(r) : r[c.k]; };
+      return p.rows.slice().sort(function (a, b) {
+        var va = get(a), vb = get(b);
+        var r = c.num ? (Number(va) || 0) - (Number(vb) || 0) : String(va == null ? '' : va).localeCompare(String(vb == null ? '' : vb), 'vi');
+        return sort.d * r;
+      });
+    }, [p.rows, sort]);
+    var show = rows.slice(0, lim);
+    var cell = function (c, r) { var v = c.x ? c.x(r) : r[c.k]; return c.f ? c.f(v, r) : c.num ? fmtN(v, c.dp) : c.date ? dmy(v) : (v == null ? '' : String(v)); };
+    return h('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden' },
+      h('div', { className: 'px-4 py-2.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2' },
+        h('div', { className: 'text-sm font-bold text-slate-700' }, p.title || '', h('span', { className: 'ml-2 text-xs font-normal text-slate-400' }, fmtN(rows.length) + ' dòng')),
+        h('div', { className: 'flex gap-2' }, p.extra || null,
+          h(Btn, { onClick: function () { exportXlsx(p.fileName || 'FSC', cols, rows, p.total); }, disabled: !rows.length }, '⬇ Excel'))),
+      !rows.length ? h('div', { className: 'p-8 text-center text-sm text-slate-400' }, p.empty || 'Không có dữ liệu.') :
+      h('div', { className: 'overflow-x-auto max-h-[70vh]' },
+        h('table', { className: 'min-w-full text-xs' },
+          h('thead', { className: 'bg-slate-50 sticky top-0 z-10' }, h('tr', null, cols.map(function (c) {
+            var on = sort && sort.k === c.k;
+            return h('th', { key: c.k, onClick: function () { setSort(on ? { k: c.k, d: -sort.d } : { k: c.k, d: c.num ? -1 : 1 }); },
+              className: cx('px-2.5 py-2 font-semibold text-slate-600 whitespace-nowrap cursor-pointer select-none border-b border-slate-200', c.num ? 'text-right' : 'text-left') },
+              c.t, on ? (sort.d > 0 ? ' ▲' : ' ▼') : '');
+          }))),
+          h('tbody', null,
+            show.map(function (r, i) {
+              return h('tr', { key: i, className: cx('border-b border-slate-100 hover:bg-blue-50/40', p.rowCls ? p.rowCls(r) : '') }, cols.map(function (c) {
+                return h('td', { key: c.k, className: cx('px-2.5 py-1.5 align-top', c.num ? 'text-right tabular-nums whitespace-nowrap' : c.wrap ? 'min-w-[12rem]' : 'whitespace-nowrap', c.cls) }, cell(c, r));
+              }));
+            }),
+            p.total ? h('tr', { className: 'bg-amber-50 font-bold sticky bottom-0' }, cols.map(function (c, i) {
+              var v = c.sum ? rows.reduce(function (s, r) { return s + (Number(c.x ? c.x(r) : r[c.k]) || 0); }, 0) : null;
+              return h('td', { key: c.k, className: cx('px-2.5 py-2', c.num ? 'text-right tabular-nums whitespace-nowrap' : '') }, i === 0 ? 'Tổng' : v == null ? '' : fmtN(v, c.dp));
+            })) : null))),
+      rows.length > lim ? h('div', { className: 'p-3 text-center' }, h(Btn, { onClick: function () { setLim(lim + 500); } }, 'Xem thêm (' + fmtN(rows.length - lim) + ' dòng)')) : null);
+  }
+
+  // ===================== Đăng nhập =====================
+  function Login(p) {
+    var _u = useState(load(NAME_KEY) || ''), user = _u[0], setUser = _u[1];
+    var _p = useState(''), pass = _p[0], setPass = _p[1];
+    var _n = useState(''), np = _n[0], setNp = _n[1], _n2 = useState(''), np2 = _n2[0], setNp2 = _n2[1];
+    var _m = useState(false), must = _m[0], setMust = _m[1];
+    var _b = useState(false), busy = _b[0], setBusy = _b[1], _e = useState(''), err = _e[0], setErr = _e[1];
+    var done = function (r) { store(TOKEN_KEY, r.token); store(NAME_KEY, user.trim()); p.onLogin(r); };
+    var submit = function (e) {
+      e.preventDefault(); setErr('');
+      if (must) {
+        if (np.length < 6) return setErr('Mật khẩu mới cần ít nhất 6 ký tự.');
+        if (np !== np2) return setErr('Hai lần nhập mật khẩu mới không khớp.');
+      }
+      setBusy(true);
+      (must ? api('setpw', { user: user.trim(), pass: pass, newPass: np }) : api('login', { user: user.trim(), pass: pass }))
+        .then(function (r) { if (r.needNewPassword) { setMust(true); setBusy(false); return; } done(r); })
+        .catch(function (e2) { setErr(e2.message); setBusy(false); });
+    };
+    var inp = function (type, val, set, ph, ac) { return h('input', { type: type, value: val, onChange: function (e) { set(e.target.value); }, placeholder: ph, autoComplete: ac, required: true, className: 'w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500' }); };
+    return h('div', { className: 'min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-slate-900 to-blue-900' },
+      h('form', { onSubmit: submit, className: 'w-full max-w-sm bg-white rounded-2xl shadow-xl p-6 space-y-3' },
+        h('div', { className: 'text-center mb-2' },
+          h('div', { className: 'text-xs font-extrabold tracking-widest text-blue-700' }, 'FOOD SUPPLY CHAIN'),
+          h('h1', { className: 'text-xl font-black text-slate-800' }, 'FSC Quản lý'),
+          h('p', { className: 'text-xs text-slate-500' }, must ? 'Lần đầu đăng nhập: đặt mật khẩu mới.' : 'Đăng nhập để xem báo cáo kho và vận hành')),
+        must ? null : inp('text', user, setUser, 'Tài khoản', 'username'),
+        must ? null : inp('password', pass, setPass, 'Mật khẩu', 'current-password'),
+        must ? inp('password', np, setNp, 'Mật khẩu mới (ít nhất 6 ký tự)', 'new-password') : null,
+        must ? inp('password', np2, setNp2, 'Nhập lại mật khẩu mới', 'new-password') : null,
+        err ? h(Note, { tone: 'err' }, err) : null,
+        h('button', { type: 'submit', disabled: busy, className: 'w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm disabled:opacity-60' }, busy ? 'Đang xử lý…' : must ? 'Lưu mật khẩu và vào trang' : 'Đăng nhập'),
+        h('p', { className: 'text-[11px] text-center text-slate-400' }, 'Quên mật khẩu hoặc cần thêm quyền: liên hệ FSC.')));
+  }
+
+  // ===================== WMS: Tồn kho / Hàng nhập / Hàng xuất / Báo cáo kho =====================
+  function useCustomerFilter(wms) {
+    var _c = useState(''), cid = _c[0], setCid = _c[1];
+    var sel = wms && wms.customers.length > 1 ? h(Field, { label: 'Khách hàng' }, h('select', { value: cid, onChange: function (e) { setCid(e.target.value); }, className: inputCls },
+      h('option', { value: '' }, 'Tất cả'), wms.customers.map(function (c) { return h('option', { key: c.id, value: c.id }, c.name); }))) : null;
+    return [cid, sel];
+  }
+  function expState(exp, nearDays) {
+    if (!/^\d{4}-\d{2}-\d{2}/.test(String(exp || ''))) return '';
+    var d = daysBetween(today(), String(exp).slice(0, 10));
+    return d < 0 ? 'het' : d <= nearDays ? 'can' : '';
+  }
+
+  function StockView(p) {
+    var w = p.wms, cf = useCustomerFilter(w), cid = cf[0];
+    var _q = useState(''), q = _q[0], setQ = _q[1], _f = useState('all'), flt = _f[0], setFlt = _f[1];
+    var rows = useMemo(function () {
+      return w.stock.filter(function (r) {
+        if (cid && r.cid !== cid) return false;
+        var st = expState(r.exp, w.nearDays);
+        if (flt === 'date' && !st) return false;
+        return match(q, [r.sku, r.name, r.location, r.lot, r.customer]);
+      });
+    }, [w, cid, q, flt]);
+    var sum = function (k) { return rows.reduce(function (s, r) { return s + (Number(r[k]) || 0); }, 0); };
+    var near = rows.filter(function (r) { return expState(r.exp, w.nearDays); }).length;
+    var skus = {}; rows.forEach(function (r) { skus[r.cid + '|' + r.sku] = 1; });
+    return h('div', { className: 'space-y-3' },
+      h(Toolbar, null, cf[1], h(Search, { value: q, onChange: setQ }),
+        h(Field, { label: 'Hiện' }, h(Seg, { value: flt, onChange: setFlt, options: [['all', 'Tất cả'], ['date', 'Cận date / hết hạn']] }))),
+      h(Cards, null,
+        h(Card, { label: 'Tổng tồn', value: fmtN(sum('qty'), 1), color: 'text-blue-700' }),
+        h(Card, { label: 'Số mã hàng', value: fmtN(Object.keys(skus).length) }),
+        h(Card, { label: 'Trọng lượng (kg)', value: fmtN(sum('kg'), 1) }),
+        h(Card, { label: 'Cận date / hết hạn (≤ ' + w.nearDays + ' ngày)', value: fmtN(near), color: near ? 'text-amber-600' : 'text-slate-800' })),
+      h(Table, {
+        title: 'Tồn kho theo vị trí, lô', fileName: 'TonKho_' + today(), rows: rows, total: true,
+        rowCls: function (r) { var s = expState(r.exp, w.nearDays); return s === 'het' ? 'bg-red-50' : s === 'can' ? 'bg-amber-50' : ''; },
+        cols: [
+          { k: 'customer', t: 'Khách hàng' }, { k: 'sku', t: 'Mã hàng' }, { k: 'name', t: 'Tên hàng', wrap: true, wch: 40 }, { k: 'unit', t: 'ĐVT' },
+          { k: 'location', t: 'Vị trí' }, { k: 'lot', t: 'Lô' }, { k: 'mfg', t: 'NSX', date: true }, { k: 'exp', t: 'HSD', date: true },
+          { k: 'qty', t: 'Tồn', num: true, dp: 1, sum: true, cls: 'font-bold' }, { k: 'kg', t: 'Kg', num: true, dp: 1, sum: true },
+          { k: 'lastIn', t: 'Nhập gần nhất', date: true }, { k: 'lastOut', t: 'Xuất gần nhất', date: true }]
+      }));
+  }
+
+  function LinesView(p) {
+    var w = p.wms, kind = p.kind, cf = useCustomerFilter(w), cid = cf[0];
+    var cr = cycleRange(cycleKeyOf(today()));
+    var _r = useState([cr.from, cr.to]), rg = _r[0], setRg = _r[1], _q = useState(''), q = _q[0], setQ = _q[1], _v = useState('doc'), view = _v[0], setView = _v[1];
+    var rows = useMemo(function () {
+      return w.lines.filter(function (r) {
+        if (r.kind !== kind || (cid && r.cid !== cid)) return false;
+        if (rg[0] && r.date < rg[0]) return false; if (rg[1] && r.date > rg[1]) return false;
+        return match(q, [r.doc, r.sku, r.name, r.partner, r.po, r.truck, r.container, r.lot, r.location, r.lpn]);
+      });
+    }, [w, kind, cid, rg, q]);
+    var docs = useMemo(function () {
+      var m = {};
+      rows.forEach(function (r) {
+        var k = r.date + '|' + r.cid + '|' + r.doc;
+        var o = m[k] || (m[k] = { date: r.date, doc: r.doc, customer: r.customer, partner: r.partner, po: r.po, truck: r.truck, container: r.container, seal: r.seal, temp: r.temp, lines: 0, qty: 0, kg: 0, confirmed: r.confirmed, adj: r.adj });
+        o.lines++; o.qty += r.qty; o.kg += r.kg;
+      });
+      return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return (b.date + b.doc).localeCompare(a.date + a.doc); });
+    }, [rows]);
+    var label = kind === 'in' ? 'nhập' : 'xuất';
+    var st = function (v, r) { return r.adj ? 'Kiểm kê' : kind === 'in' ? (r.confirmed ? 'Confirmed' : 'Chưa confirm') : ''; };
+    var docCols = [
+      { k: 'date', t: 'Ngày', date: true }, { k: 'doc', t: 'Số phiếu' }, { k: 'customer', t: 'Khách hàng' }, { k: 'partner', t: kind === 'in' ? 'Nhà cung cấp' : 'Nơi nhận', wrap: true },
+      { k: 'po', t: 'PO' }, { k: 'truck', t: 'Xe' }, { k: 'container', t: 'Container' }, { k: 'seal', t: 'Seal' }, { k: 'temp', t: 'Nhiệt độ' },
+      { k: 'lines', t: 'Số dòng', num: true, sum: true }, { k: 'qty', t: 'Số lượng', num: true, dp: 1, sum: true }, { k: 'kg', t: 'Kg', num: true, dp: 1, sum: true }];
+    if (kind === 'in') docCols.push({ k: 'st', t: 'Trạng thái', x: function (r) { return st(null, r); } });
+    var lineCols = [
+      { k: 'date', t: 'Ngày', date: true }, { k: 'doc', t: 'Số phiếu' }, { k: 'customer', t: 'Khách hàng' }, { k: 'partner', t: kind === 'in' ? 'Nhà cung cấp' : 'Nơi nhận' },
+      { k: 'sku', t: 'Mã hàng' }, { k: 'name', t: 'Tên hàng', wrap: true, wch: 40 }, { k: 'unit', t: 'ĐVT' }, { k: 'qty', t: 'Số lượng', num: true, dp: 1, sum: true },
+      { k: 'kg', t: 'Kg', num: true, dp: 1, sum: true }, { k: 'location', t: 'Vị trí' }, { k: 'lot', t: 'Lô' }, { k: 'mfg', t: 'NSX', date: true }, { k: 'exp', t: 'HSD', date: true },
+      { k: 'lpn', t: 'LPN' }, { k: 'note', t: 'Ghi chú', wrap: true }];
+    if (kind === 'in') lineCols.push({ k: 'st', t: 'Trạng thái', x: function (r) { return st(null, r); } });
+    var sumQ = rows.reduce(function (s, r) { return s + r.qty; }, 0), sumK = rows.reduce(function (s, r) { return s + r.kg; }, 0);
+    return h('div', { className: 'space-y-3' },
+      h(Toolbar, null, cf[1], h(DateRange, { from: rg[0], to: rg[1], onChange: function (a, b) { setRg([a, b]); } }), h(Search, { value: q, onChange: setQ }),
+        h(Field, { label: 'Xem theo' }, h(Seg, { value: view, onChange: setView, options: [['doc', 'Phiếu'], ['line', 'Dòng hàng']] }))),
+      h(Cards, null,
+        h(Card, { label: 'Số phiếu ' + label, value: fmtN(docs.length), color: 'text-blue-700' }),
+        h(Card, { label: 'Số dòng hàng', value: fmtN(rows.length) }),
+        h(Card, { label: 'Tổng số lượng', value: fmtN(sumQ, 1) }),
+        h(Card, { label: 'Tổng kg', value: fmtN(sumK, 1) })),
+      view === 'doc'
+        ? h(Table, { title: 'Phiếu ' + label, fileName: (kind === 'in' ? 'Inbound_' : 'Outbound_') + rg[0] + '_' + rg[1], rows: docs, total: true, cols: docCols })
+        : h(Table, { title: 'Dòng hàng ' + label, fileName: (kind === 'in' ? 'Inbound_chitiet_' : 'Outbound_chitiet_') + rg[0] + '_' + rg[1], rows: rows, total: true, cols: lineCols }));
+  }
+
+  // Báo cáo kho: Nhập – Xuất – Tồn theo mã hàng trong khoảng ngày; Hàng cận date.
+  function ReportView(p) {
+    var w = p.wms, cf = useCustomerFilter(w), cid = cf[0];
+    var cr = cycleRange(cycleKeyOf(today()));
+    var _r = useState([cr.from, cr.to]), rg = _r[0], setRg = _r[1], _q = useState(''), q = _q[0], setQ = _q[1], _t = useState('nxt'), type = _t[0], setType = _t[1];
+    var nxt = useMemo(function () {
+      var m = {};
+      w.lines.forEach(function (r) {
+        if (cid && r.cid !== cid) return;
+        if (r.kind === 'in' && !r.confirmed && !r.adj) return;
+        var k = r.cid + '|' + String(r.sku).toUpperCase();
+        var o = m[k] || (m[k] = { customer: r.customer, sku: r.sku, name: r.name, unit: r.unit, open: 0, inQ: 0, outQ: 0, close: 0 });
+        if (!o.name && r.name) o.name = r.name;
+        var sign = r.kind === 'in' ? 1 : -1;
+        if (rg[0] && r.date < rg[0]) o.open += sign * r.qty;
+        else if (!rg[1] || r.date <= rg[1]) { if (sign > 0) o.inQ += r.qty; else o.outQ += r.qty; }
+      });
+      return Object.keys(m).map(function (k) { var o = m[k]; o.close = o.open + o.inQ - o.outQ; return o; })
+        .filter(function (o) { return (o.open || o.inQ || o.outQ || o.close) && match(q, [o.sku, o.name, o.customer]); })
+        .sort(function (a, b) { return (a.customer + a.sku).localeCompare(b.customer + b.sku); });
+    }, [w, cid, rg, q]);
+    var dates = useMemo(function () {
+      return w.stock.filter(function (r) { return (!cid || r.cid === cid) && expState(r.exp, w.nearDays) && match(q, [r.sku, r.name, r.location, r.lot]); })
+        .map(function (r) { return Object.assign({ left: daysBetween(today(), String(r.exp).slice(0, 10)) }, r); })
+        .sort(function (a, b) { return a.left - b.left; });
+    }, [w, cid, q]);
+    return h('div', { className: 'space-y-3' },
+      h(Toolbar, null, h(Field, { label: 'Loại báo cáo' }, h(Seg, { value: type, onChange: setType, options: [['nxt', 'Nhập – Xuất – Tồn'], ['date', 'Cận date / hết hạn']] })),
+        cf[1], type === 'nxt' ? h(DateRange, { from: rg[0], to: rg[1], onChange: function (a, b) { setRg([a, b]); } }) : null, h(Search, { value: q, onChange: setQ })),
+      type === 'nxt'
+        ? h(Table, { title: 'Nhập – Xuất – Tồn ' + dmy(rg[0]) + ' → ' + dmy(rg[1]), fileName: 'NXT_' + rg[0] + '_' + rg[1], rows: nxt, total: true,
+          empty: 'Không có phát sinh trong khoảng này.',
+          cols: [{ k: 'customer', t: 'Khách hàng' }, { k: 'sku', t: 'Mã hàng' }, { k: 'name', t: 'Tên hàng', wrap: true, wch: 40 }, { k: 'unit', t: 'ĐVT' },
+            { k: 'open', t: 'Tồn đầu kỳ', num: true, dp: 1, sum: true }, { k: 'inQ', t: 'Nhập', num: true, dp: 1, sum: true, cls: 'text-emerald-700' },
+            { k: 'outQ', t: 'Xuất', num: true, dp: 1, sum: true, cls: 'text-red-600' }, { k: 'close', t: 'Tồn cuối kỳ', num: true, dp: 1, sum: true, cls: 'font-bold' }] })
+        : h(Table, { title: 'Hàng cận date (≤ ' + w.nearDays + ' ngày) và hết hạn', fileName: 'CanDate_' + today(), rows: dates, total: true,
+          rowCls: function (r) { return r.left < 0 ? 'bg-red-50' : 'bg-amber-50'; }, empty: 'Không có hàng cận date.',
+          cols: [{ k: 'customer', t: 'Khách hàng' }, { k: 'sku', t: 'Mã hàng' }, { k: 'name', t: 'Tên hàng', wrap: true, wch: 40 }, { k: 'location', t: 'Vị trí' }, { k: 'lot', t: 'Lô' },
+            { k: 'exp', t: 'HSD', date: true }, { k: 'left', t: 'Còn (ngày)', num: true, f: function (v) { return v < 0 ? 'Hết hạn ' + (-v) + ' ngày' : fmtN(v); } },
+            { k: 'qty', t: 'Tồn', num: true, dp: 1, sum: true }, { k: 'kg', t: 'Kg', num: true, dp: 1, sum: true }] }));
+  }
+
+  // ===================== Sản lượng CPG =====================
+  function CpgView(p) {
+    var cr = cycleRange(cycleKeyOf(today()));
+    var _r = useState([cr.from, cr.to]), rg = _r[0], setRg = _r[1], _q = useState(''), q = _q[0], setQ = _q[1], _v = useState('nv'), view = _v[0], setView = _v[1];
+    var _d = useState(null), data = _d[0], setData = _d[1], _e = useState(''), err = _e[0], setErr = _e[1], _n = useState(0), nonce = _n[0], setNonce = _n[1];
+    useEffect(function () {
+      var alive = true; setErr('');
+      api('cpg', { from: rg[0], to: rg[1] }).then(function (r) { if (alive) setData(r); }).catch(function (e) { if (alive) setErr(e.message); });
+      return function () { alive = false; };
+    }, [rg[0], rg[1], nonce]);
+    if (err) return h(Note, { tone: 'err' }, err);
+    if (!data) return h(Loading);
+    var money = data.money;
+    var rows = data.rows.filter(function (r) { return match(q, [r.doc, r.name, r.code, r.service, r.customer, r.type]); });
+    var byNv = {}, docs = {};
+    rows.forEach(function (r) {
+      docs[r.type + r.doc + r.date] = 1;
+      var o = byNv[r.code] || (byNv[r.code] = { code: r.code, name: r.name, inQ: 0, outQ: 0, qty: 0, cost: 0, days: {} });
+      if (r.type === 'Inbound') o.inQ += r.qty; else o.outQ += r.qty;
+      o.qty += r.qty; o.cost += r.cost || 0; o.days[r.date] = 1;
+    });
+    var nvRows = Object.keys(byNv).map(function (k) { var o = byNv[k]; o.nDays = Object.keys(o.days).length; return o; });
+    var sumQ = rows.reduce(function (s, r) { return s + r.qty; }, 0), sumC = rows.reduce(function (s, r) { return s + (r.cost || 0); }, 0);
+    var nvCols = [{ k: 'code', t: 'Mã NV' }, { k: 'name', t: 'Họ tên' }, { k: 'nDays', t: 'Số ngày làm', num: true }, { k: 'inQ', t: 'SL Inbound', num: true, dp: 1, sum: true },
+      { k: 'outQ', t: 'SL Outbound', num: true, dp: 1, sum: true }, { k: 'qty', t: 'Tổng sản lượng', num: true, dp: 1, sum: true, cls: 'font-bold' }];
+    if (money) nvCols.push({ k: 'cost', t: 'Tiền công', num: true, sum: true, cls: 'text-emerald-700' });
+    var dCols = [{ k: 'date', t: 'Ngày', date: true }, { k: 'type', t: 'Loại' }, { k: 'doc', t: 'Số phiếu' }, { k: 'service', t: 'Dịch vụ', wrap: true }, { k: 'customer', t: 'Khách hàng' },
+      { k: 'code', t: 'Mã NV' }, { k: 'name', t: 'Họ tên' }, { k: 'qty', t: 'Sản lượng', num: true, dp: 2, sum: true }];
+    if (money) dCols.push({ k: 'price', t: 'Đơn giá công', num: true }, { k: 'cost', t: 'Tiền công', num: true, sum: true });
+    return h('div', { className: 'space-y-3' },
+      h(Toolbar, null, h(DateRange, { from: rg[0], to: rg[1], onChange: function (a, b) { setData(null); setRg([a, b]); } }), h(Search, { value: q, onChange: setQ, placeholder: 'Phiếu, mã NV, tên…' }),
+        h(Field, { label: 'Xem theo' }, h(Seg, { value: view, onChange: setView, options: [['nv', 'Nhân viên'], ['line', 'Chi tiết phiếu']] })),
+        h(Btn, { onClick: function () { setData(null); setNonce(nonce + 1); } }, '↻ Tải lại')),
+      data.updatedAt ? h('p', { className: 'text-[11px] text-slate-400 px-1' }, 'Dashboard gửi dữ liệu lúc ' + data.updatedAt) : null,
+      h(Cards, null,
+        h(Card, { label: 'Tổng sản lượng', value: fmtN(sumQ, 1), color: 'text-blue-700' }),
+        h(Card, { label: 'Số phiếu', value: fmtN(Object.keys(docs).length) }),
+        h(Card, { label: 'Số nhân viên', value: fmtN(nvRows.length) }),
+        money ? h(Card, { label: 'Tổng tiền công', value: fmtN(sumC), color: 'text-emerald-700' }) : h(Card, { label: 'Số dòng', value: fmtN(rows.length) })),
+      view === 'nv'
+        ? h(Table, { title: 'Sản lượng CPG theo nhân viên', fileName: 'SL_CPG_NV_' + rg[0] + '_' + rg[1], rows: nvRows, total: true, sort: { k: 'qty', d: -1 }, cols: nvCols })
+        : h(Table, { title: 'Sản lượng CPG chi tiết', fileName: 'SL_CPG_' + rg[0] + '_' + rg[1], rows: rows, total: true, cols: dCols }));
+  }
+
+  // ===================== Sản lượng KFM =====================
+  function KfmView() {
+    var _k = useState(cycleKeyOf(today())), key = _k[0], setKey = _k[1];
+    var _d = useState(null), data = _d[0], setData = _d[1], _e = useState(''), err = _e[0], setErr = _e[1], _v = useState('day'), view = _v[0], setView = _v[1];
+    useEffect(function () { api('kfm').then(setData).catch(function (e) { setErr(e.message); }); }, []);
+    if (err) return h(Note, { tone: 'err' }, err);
+    if (!data) return h(Loading);
+    var cr = cycleRange(key);
+    var files = data.rows.filter(function (r) { return r.date >= cr.from && r.date <= cr.to; });
+    var byDay = {};
+    files.forEach(function (r) {
+      var o = byDay[r.date] || (byDay[r.date] = { date: r.date, rawDate: r.rawDate, nFiles: 0, barcode: 0, booking: 0, totalPick: 0, confirmPick: 0, actual: 0, qty: 0, locations: 0 });
+      o.nFiles++; ['barcode', 'booking', 'totalPick', 'confirmPick', 'actual', 'qty', 'locations'].forEach(function (k) { o[k] += r[k] || 0; });
+    });
+    var rows = Object.keys(byDay).map(function (k) { return byDay[k]; });
+    var sum = function (k) { return rows.reduce(function (s, r) { return s + (r[k] || 0); }, 0); };
+    var months = {}, seenDay = {};
+    data.rows.forEach(function (r) { var k = cycleKeyOf(r.date); var o = months[k] || (months[k] = { key: k, days: 0, barcode: 0, booking: 0, confirmPick: 0, actual: 0 }); if (!seenDay[r.date]) { seenDay[r.date] = 1; o.days++; } o.barcode += r.barcode; o.booking += r.booking; o.confirmPick += r.confirmPick; o.actual += r.actual; });
+    var mRows = Object.keys(months).sort().reverse().map(function (k) { return months[k]; });
+    return h('div', { className: 'space-y-3' },
+      !data.rows.length ? h(Note, { tone: 'warn' }, 'Chưa có dữ liệu sản lượng KFM. Dữ liệu được Dashboard FSC gửi kèm file WMS khi chủ trang hoặc quản lý mở Dashboard.') : null,
+      h(Toolbar, null, h(Btn, { onClick: function () { setKey(shiftCycle(key, -1)); } }, '‹'), h(CycleSel, { value: key, onChange: setKey }), h(Btn, { onClick: function () { setKey(shiftCycle(key, 1)); } }, '›'),
+        h('span', { className: 'text-xs text-slate-500 pb-1.5' }, dmy(cr.from) + ' → ' + dmy(cr.to) + ' · ' + rows.length + ' ngày có dữ liệu'),
+        h(Field, { label: 'Xem theo' }, h(Seg, { value: view, onChange: setView, options: [['day', 'Ngày'], ['file', 'Từng file']] }))),
+      data.updatedAt ? h('p', { className: 'text-[11px] text-slate-400 px-1' }, 'Dashboard gửi dữ liệu lúc ' + data.updatedAt) : null,
+      h(Cards, null,
+        h(Card, { label: 'Số lượng Barcode', value: fmtN(sum('barcode')), color: 'text-teal-700' }),
+        h(Card, { label: 'Số lượng Booking', value: fmtN(sum('booking')), color: 'text-amber-700' }),
+        h(Card, { label: 'FSC Pick tổng WMS', value: fmtN(sum('confirmPick')), color: 'text-violet-700' }),
+        h(Card, { label: 'FSC thực chia', value: fmtN(sum('actual')), color: 'text-emerald-700', tone: 'bg-emerald-50 border-emerald-300' })),
+      view === 'file' ? h(Table, { title: 'Sản lượng KFM từng file', fileName: 'SL_KFM_file_' + key, rows: files, total: true, sort: { k: 'date', d: -1 },
+        cols: [{ k: 'date', t: 'Ngày', date: true }, { k: 'file', t: 'File', wrap: true, wch: 44 }, { k: 'team', t: 'Tổ' }, { k: 'barcode', t: 'Số barcode', num: true, sum: true },
+          { k: 'booking', t: 'Booking', num: true, sum: true }, { k: 'totalPick', t: 'Tổng pick', num: true, sum: true }, { k: 'confirmPick', t: 'FSC Pick tổng WMS', num: true, sum: true },
+          { k: 'actual', t: 'FSC thực chia', num: true, sum: true, cls: 'font-bold text-emerald-700' }, { k: 'locations', t: 'Số vị trí', num: true, sum: true }] }) :
+      h(Table, { title: 'Sản lượng KFM theo ngày', fileName: 'SL_KFM_' + key, rows: rows, total: true, sort: { k: 'date', d: -1 },
+        cols: [{ k: 'date', t: 'Ngày', date: true }, { k: 'nFiles', t: 'Số file', num: true }, { k: 'barcode', t: 'Số barcode', num: true, sum: true },
+          { k: 'booking', t: 'Booking', num: true, sum: true }, { k: 'totalPick', t: 'Tổng pick', num: true, sum: true }, { k: 'confirmPick', t: 'FSC Pick tổng WMS', num: true, sum: true },
+          { k: 'actual', t: 'FSC thực chia', num: true, sum: true, cls: 'font-bold text-emerald-700' }, { k: 'locations', t: 'Số vị trí', num: true, sum: true }] }),
+      h(Table, { title: 'Tổng hợp theo kỳ 26–25', fileName: 'SL_KFM_theo_ky', rows: mRows,
+        cols: [{ k: 'key', t: 'Kỳ', f: function (v) { return cycleLabel(v); } }, { k: 'days', t: 'Số ngày', num: true }, { k: 'barcode', t: 'Barcode', num: true },
+          { k: 'booking', t: 'Booking', num: true }, { k: 'confirmPick', t: 'FSC Pick tổng WMS', num: true }, { k: 'actual', t: 'FSC thực chia', num: true, cls: 'font-bold' }] }));
+  }
+
+  // ===================== Chấm công =====================
+  var ST_SHORT = { 'Đủ công': '1', 'Nửa công': '½', 'Nghỉ': '–' };
+  function ChamCongView() {
+    var _k = useState(''), ky = _k[0], setKy = _k[1], _v = useState('day'), view = _v[0], setView = _v[1];
+    var _d = useState(null), data = _d[0], setData = _d[1], _e = useState(''), err = _e[0], setErr = _e[1], _n = useState(0), nonce = _n[0], setNonce = _n[1];
+    var _day = useState(today()), day = _day[0], setDay = _day[1], _q = useState(''), q = _q[0], setQ = _q[1], _t = useState(''), team = _t[0], setTeam = _t[1], _o = useState(false), onlyErr = _o[0], setOnlyErr = _o[1];
+    useEffect(function () {
+      var alive = true; setErr('');
+      api('chamcong', { ky: ky }).then(function (r) {
+        if (!alive) return; setData(r);
+        if (!ky) setKy(r.ky);
+        var cr = cycleRange(r.ky); if (day < cr.from || day > cr.to) setDay(cr.to < today() ? cr.to : cr.from);
+      }).catch(function (e) { if (alive) setErr(e.message); });
+      return function () { alive = false; };
+    }, [ky, nonce]);
+    if (err) return h(Note, { tone: 'err' }, err);
+    if (!data) return h(Loading);
+    var teams = {}; data.days.forEach(function (r) { if (r.team) teams[r.team] = 1; });
+    var fTeam = function (r) { return !team || r.team === team; };
+    var bar = h(Toolbar, null,
+      h(CycleSel, { value: data.ky, options: data.dsKy.length ? data.dsKy : [data.ky], onChange: function (k) { setData(null); setKy(k); } }),
+      h(Field, { label: 'Xem' }, h(Seg, { value: view, onChange: setView, options: [['day', 'Theo ngày'], ['month', 'Bảng tháng'], ['scan', 'Nhật ký quét']] })),
+      view === 'day' ? h(Field, { label: 'Ngày' }, h('input', { type: 'date', value: day, onChange: function (e) { setDay(e.target.value); }, className: inputCls })) : null,
+      view !== 'scan' && Object.keys(teams).length > 1 ? h(Field, { label: 'Tổ' }, h('select', { value: team, onChange: function (e) { setTeam(e.target.value); }, className: inputCls },
+        h('option', { value: '' }, 'Tất cả'), Object.keys(teams).sort().map(function (t) { return h('option', { key: t, value: t }, t); }))) : null,
+      h(Search, { value: q, onChange: setQ, placeholder: 'Mã NV, tên…' }),
+      view === 'scan' ? h('label', { className: 'flex items-center gap-1 text-xs text-slate-600 pb-1.5' }, h('input', { type: 'checkbox', checked: onlyErr, onChange: function (e) { setOnlyErr(e.target.checked); } }), 'Chỉ lượt bị từ chối') : null,
+      h(Btn, { onClick: function () { setData(null); setNonce(nonce + 1); } }, '↻ Tải lại'));
+    var info = h('p', { className: 'text-[11px] text-slate-400 px-1' }, 'Bảng công theo bản chốt của Dashboard FSC' + (data.updatedAt ? ' (gửi lúc ' + data.updatedAt + ')' : '') + '. Nhật ký quét lấy trực tiếp, ' + data.scanDays + ' ngày gần nhất.');
+    var body;
+    if (view === 'day') {
+      var rows = data.days.filter(function (r) { return r.date === day && fTeam(r) && match(q, [r.code, r.name]); });
+      var scansDay = {}; data.scans.forEach(function (s) { if (s.t.slice(0, 10) === day && s.ok) scansDay[s.code] = (scansDay[s.code] || 0) + 1; });
+      var cong = rows.reduce(function (s, r) { return s + r.value; }, 0);
+      body = [h(Cards, { key: 'c' },
+        h(Card, { label: 'Số người có công', value: fmtN(rows.filter(function (r) { return r.value > 0; }).length), color: 'text-blue-700' }),
+        h(Card, { label: 'Tổng công', value: fmtN(cong, 1) }),
+        h(Card, { label: 'Thiếu giờ ra', value: fmtN(rows.filter(function (r) { return r.in && !r.out; }).length), color: 'text-amber-600' }),
+        h(Card, { label: 'Nghỉ', value: fmtN(rows.filter(function (r) { return r.status === 'Nghỉ'; }).length) })),
+        h(Table, { key: 't', title: 'Chấm công ngày ' + dmy(day), fileName: 'ChamCong_' + day, rows: rows, total: true, sort: { k: 'code', d: 1 },
+          rowCls: function (r) { return r.in && !r.out ? 'bg-amber-50' : ''; }, empty: 'Ngày này chưa có công trong bản chốt.',
+          cols: [{ k: 'code', t: 'Mã NV' }, { k: 'name', t: 'Họ tên' }, { k: 'team', t: 'Tổ' }, { k: 'status', t: 'Trạng thái' }, { k: 'value', t: 'Công', num: true, dp: 1, sum: true },
+            { k: 'in', t: 'Giờ vào' }, { k: 'out', t: 'Giờ ra', f: function (v, r) { return v || (r.in ? 'Thiếu giờ ra' : ''); } }, { k: 'ot', t: 'Tăng ca (giờ)', num: true, dp: 1, sum: true },
+            { k: 'sc', t: 'Lượt quét', num: true, x: function (r) { return scansDay[r.code] || 0; } }] })];
+    } else if (view === 'month') {
+      var cr = cycleRange(data.ky), dates = [];
+      for (var d = new Date(cr.from + 'T00:00:00'); isoOf(d) <= cr.to; d.setDate(d.getDate() + 1)) dates.push(isoOf(d));
+      var people = {};
+      data.days.forEach(function (r) {
+        if (!fTeam(r) || !match(q, [r.code, r.name])) return;
+        var o = people[r.code] || (people[r.code] = { code: r.code, name: r.name, team: r.team, total: 0, ot: 0, miss: 0 });
+        o[r.date] = r; o.total += r.value; o.ot += r.ot; if (r.in && !r.out) o.miss++;
+      });
+      var pRows = Object.keys(people).sort().map(function (k) { return people[k]; });
+      var mCols = [{ k: 'code', t: 'Mã NV', cls: 'sticky left-0 bg-white' }, { k: 'name', t: 'Họ tên' }, { k: 'team', t: 'Tổ' }]
+        .concat(dates.map(function (dt) {
+          return { k: dt, t: dt.slice(8, 10) + '/' + dt.slice(5, 7), x: function (r) { var c = r[dt]; return c ? (c.value ? c.value : ST_SHORT[c.status] || c.status) : ''; },
+            f: function (v, r) { var c = r[dt]; if (!c) return ''; return h('span', { title: [c.status, c.in && ('vào ' + c.in), c.out && ('ra ' + c.out)].filter(Boolean).join(' · '), className: c.value >= 1 ? 'text-emerald-700 font-bold' : c.value > 0 ? 'text-blue-700 font-bold' : 'text-slate-400' }, c.value ? fmtN(c.value, 1) : (ST_SHORT[c.status] || c.status)); } };
+        }))
+        .concat([{ k: 'total', t: 'Tổng công', num: true, dp: 1, sum: true, cls: 'font-bold' }, { k: 'ot', t: 'Tăng ca', num: true, dp: 1, sum: true }, { k: 'miss', t: 'Thiếu ra', num: true, sum: true }]);
+      body = h(Table, { title: 'Bảng công ' + cycleLabel(data.ky) + ' (' + dmy(cr.from) + ' → ' + dmy(cr.to) + ')', fileName: 'BangCong_' + data.ky, rows: pRows, total: true, cols: mCols });
+    } else {
+      var sRows = data.scans.filter(function (s) { return (!onlyErr || !s.ok) && match(q, [s.code, s.name, s.note]); });
+      body = h(Table, { title: 'Nhật ký quét mã', fileName: 'NhatKyQuet_' + today(), rows: sRows, rowCls: function (r) { return r.ok ? '' : 'bg-red-50'; },
+        cols: [{ k: 't', t: 'Thời gian', f: function (v) { return dmy(v.slice(0, 10)) + ' ' + v.slice(11, 16); } }, { k: 'code', t: 'Mã NV' }, { k: 'name', t: 'Họ tên' }, { k: 'team', t: 'Tổ' },
+          { k: 'type', t: 'Loại', f: function (v) { return v === 'IN' ? 'Vào' : v === 'OUT' ? 'Ra' : v; } }, { k: 'point', t: 'Điểm quét' },
+          { k: 'ok', t: 'Kết quả', x: function (r) { return r.ok ? 'Hợp lệ' : 'Từ chối'; } }, { k: 'note', t: 'Ghi chú', wrap: true }] });
+    }
+    return h('div', { className: 'space-y-3' }, bar, info, body);
+  }
+
+  // ===================== Khung trang =====================
+  var MENU = [
+    { id: 'ton', ten: 'Tồn kho', icon: '📦', wms: true }, { id: 'nhap', ten: 'Hàng nhập', icon: '📥', wms: true }, { id: 'xuat', ten: 'Hàng xuất', icon: '📤', wms: true },
+    { id: 'baocao', ten: 'Báo cáo kho', icon: '📊', wms: true }, { id: 'cpg', ten: 'Sản lượng CPG', icon: '🧾' }, { id: 'kfm', ten: 'Sản lượng KFM', icon: '🧊' },
+    { id: 'kpi', ten: 'KPI FSC', icon: '🎯' }, { id: 'chamcong', ten: 'Chấm công', icon: '🕒' }];
+
+  function Main(p) {
+    var me = p.me, items = MENU.filter(function (m) { return me.perms[m.id]; });
+    var saved = load('fscql_tab');
+    var _t = useState(items.some(function (m) { return m.id === saved; }) ? saved : items[0].id), tab = _t[0], setTab = _t[1];
+    var _w = useState(null), wms = _w[0], setWms = _w[1], _e = useState(''), err = _e[0], setErr = _e[1], _n = useState(0), nonce = _n[0], setNonce = _n[1];
+    var cur = MENU.find(function (m) { return m.id === tab; });
+    useEffect(function () { store('fscql_tab', tab); }, [tab]);
+    useEffect(function () {
+      if (!cur.wms || wms) return;
+      setErr('');
+      api('data').then(function (r) { setWms(r); }).catch(function (e) { setErr(e.message); });
+    }, [tab, nonce]);
+    var view;
+    if (cur.wms) view = err ? h(Note, { tone: 'err' }, err) : !wms ? h(Loading) :
+      tab === 'ton' ? h(StockView, { wms: wms }) : tab === 'nhap' ? h(LinesView, { wms: wms, kind: 'in', key: 'in' }) : tab === 'xuat' ? h(LinesView, { wms: wms, kind: 'out', key: 'out' }) : h(ReportView, { wms: wms });
+    else if (tab === 'cpg') view = h(CpgView);
+    else if (tab === 'kfm') view = h(KfmView);
+    else if (tab === 'kpi') view = window.KpiFscModule ? h(window.KpiFscModule, { snapshotOnly: true }) : h(Note, null, 'Không tải được mục KPI.');
+    else view = h(ChamCongView);
+    return h('div', { className: 'min-h-screen bg-slate-50' },
+      h('header', { className: 'bg-slate-900 text-white sticky top-0 z-30 shadow' },
+        h('div', { className: 'max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3' },
+          h('div', { className: 'min-w-0' }, h('div', { className: 'text-[10px] font-extrabold tracking-widest text-blue-300' }, 'FOOD SUPPLY CHAIN'), h('div', { className: 'font-black leading-tight' }, 'FSC Quản lý')),
+          h('div', { className: 'flex items-center gap-3 text-xs' },
+            h('span', { className: 'hidden sm:inline text-slate-300' }, me.name),
+            h('button', { type: 'button', onClick: p.onLogout, className: 'px-2.5 py-1 rounded-lg border border-slate-600 hover:bg-slate-800' }, 'Đăng xuất'))),
+        h('nav', { className: 'max-w-7xl mx-auto px-2 flex gap-1 overflow-x-auto' }, items.map(function (m) {
+          return h('button', { key: m.id, type: 'button', onClick: function () { setTab(m.id); },
+            className: cx('px-3 py-2 text-sm whitespace-nowrap border-b-2', tab === m.id ? 'border-blue-400 text-white font-bold' : 'border-transparent text-slate-400 hover:text-slate-200') }, m.icon + ' ' + m.ten);
+        }))),
+      h('main', { className: 'max-w-7xl mx-auto p-3 sm:p-4 space-y-3' },
+        cur.wms && wms ? h('div', { className: 'flex flex-wrap items-center justify-between gap-2 px-1' },
+          h('p', { className: 'text-[11px] text-slate-400' }, 'Dữ liệu kho cập nhật lúc ' + (wms.updatedAt || '—')),
+          h(Btn, { onClick: function () { setWms(null); setNonce(nonce + 1); } }, '↻ Tải lại')) : null,
+        view));
+  }
+
+  function App() {
+    var _m = useState(null), me = _m[0], setMe = _m[1], _c = useState(!!load(TOKEN_KEY)), checking = _c[0], setChecking = _c[1];
+    useEffect(function () {
+      var onExp = function () { setMe(null); };
+      window.addEventListener('fsc-expired', onExp);
+      if (load(TOKEN_KEY)) api('me').then(function (r) { setMe(r); }).catch(function () {}).then(function () { setChecking(false); });
+      return function () { window.removeEventListener('fsc-expired', onExp); };
+    }, []);
+    if (checking) return h(Loading);
+    if (!me) return h(Login, { onLogin: setMe });
+    return h(Main, { me: me, onLogout: function () { store(TOKEN_KEY, null); setMe(null); } });
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+})();
+
+  </script>
+</body>
+</html>
